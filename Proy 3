@@ -1,0 +1,353 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+# ============================================================
+# 1. CARGAR Y RENOMBRAR DATASET
+# ============================================================
+def cargar_y_renombrar_dataset(ruta_csv):
+    df = pd.read_csv(ruta_csv)
+    df.columns = df.columns.str.strip().str.lower()
+
+    mapeo = {
+        'sleep': 'Calidad_Sueno',
+        'headache': 'Dolores_Cabeza',
+        'academic': 'Rendimiento_Academico',
+        'load': 'Carga_Estudio',
+        'extra': 'Actividades_Extra',
+        'stress': 'Nivel_Estres'
+    }
+
+    renombradas = {}
+    for col in df.columns:
+        for clave, nuevo in mapeo.items():
+            if clave in col:
+                renombradas[col] = nuevo
+
+    df.rename(columns=renombradas, inplace=True)
+    return df
+
+
+# ============================================================
+# 2. PREPARAR DATOS
+# ============================================================
+def preparar_datos(df):
+    columnas = [
+        'Calidad_Sueno',
+        'Dolores_Cabeza',
+        'Rendimiento_Academico',
+        'Carga_Estudio',
+        'Actividades_Extra',
+        'Nivel_Estres'
+    ]
+
+    columnas_validas = [c for c in columnas if c in df.columns]
+    df = df[columnas_validas].apply(pd.to_numeric, errors='coerce').dropna()
+
+    return df, columnas_validas
+
+
+# ============================================================
+# 3. SHAPIRO–WILK MANUAL
+# ============================================================
+def media_vector(v):
+    return sum(v) / len(v)
+
+
+def varianza_vector(v):
+    m = media_vector(v)
+    return sum((x - m) ** 2 for x in v)
+
+
+def coeficientes_shapiro(n):
+    a = np.zeros(n)
+    valores = np.linspace(0.1, 0.9, n // 2)
+    for i in range(n // 2):
+        a[i] = valores[i]
+        a[n - i - 1] = -valores[i]
+    return a
+
+
+def shapiro_wilk(datos):
+    x_ord = np.sort(datos)
+    a = coeficientes_shapiro(len(datos))
+    suma = sum(a[i] * x_ord[i] for i in range(len(datos)))
+    return (suma ** 2) / varianza_vector(datos)
+
+
+def prueba_shapiro(df, columnas):
+    print("\n--- SHAPIRO–WILK MANUAL ---")
+    print("Criterio: W ≥ 0.95 → Aproximadamente normal\n")
+
+    for col in columnas:
+        muestra = df[col].sample(20, random_state=1).values
+        W = shapiro_wilk(muestra)
+        estado = "Normal" if W >= 0.95 else "No normal"
+        print(f"{col.replace('_',' ')} → W = {W:.4f} → {estado}")
+
+
+# ============================================================
+# 4. NORMALIZACIÓN MANUAL (MIN–MAX)
+# ============================================================
+def normalizar(X):
+    X_norm = np.zeros_like(X, dtype=float)
+    for j in range(X.shape[1]):
+        min_j = X[:, j].min()
+        max_j = X[:, j].max()
+        for i in range(X.shape[0]):
+            X_norm[i, j] = (X[i, j] - min_j) / (max_j - min_j)
+    return X_norm
+
+
+# ============================================================
+# 5. MEDIA Y COVARIANZA MANUAL
+# ============================================================
+def media_matriz(X):
+    return np.array([sum(X[:, j]) / len(X) for j in range(X.shape[1])])
+
+
+def covarianza(X):
+    n = X.shape[0]
+    media = media_matriz(X)
+    Xc = X - media
+    cov = np.zeros((X.shape[1], X.shape[1]))
+
+    for i in range(X.shape[1]):
+        for j in range(X.shape[1]):
+            cov[i, j] = sum(Xc[k, i] * Xc[k, j] for k in range(n)) / (n - 1)
+
+    return cov
+
+
+# ============================================================
+# 6. VALORES PROPIOS Y VARIANZA EXPLICADA
+# ============================================================
+def analizar_valores_propios(X):
+    cov = covarianza(X)
+    autovalores, autovectores = np.linalg.eig(cov)
+
+    idx = autovalores.argsort()[::-1]
+    autovalores = autovalores[idx]
+    autovectores = autovectores[:, idx]
+
+    total = sum(autovalores)
+    varianza = autovalores / total
+    var_acum = np.cumsum(varianza)
+
+    print("\n--- VALORES PROPIOS ---")
+    for i in range(len(autovalores)):
+        print(
+            f"CP{i+1}: λ = {autovalores[i]:.4f} | "
+            f"Varianza = {varianza[i]*100:.2f}% | "
+            f"Acumulada = {var_acum[i]*100:.2f}%"
+        )
+
+    return autovalores, varianza, var_acum
+
+
+def graficar_scree(autovalores):
+    plt.figure()
+    plt.plot(range(1, len(autovalores)+1), autovalores, marker='o')
+    plt.xlabel("Componente principal")
+    plt.ylabel("Valor propio")
+    plt.title("Scree Plot")
+    plt.grid(alpha=0.4, linestyle='--')
+    plt.show()
+
+
+def graficar_varianza_acumulada(var_acum):
+    plt.figure()
+    plt.plot(range(1, len(var_acum)+1), var_acum*100, marker='o')
+    plt.xlabel("Número de componentes")
+    plt.ylabel("Varianza acumulada (%)")
+    plt.title("Varianza explicada acumulada")
+    plt.ylim(0, 100)
+    plt.grid(alpha=0.4, linestyle='--')
+    plt.show()
+
+
+# ============================================================
+# 7. PCA MANUAL
+# ============================================================
+def pca(X):
+    cov = covarianza(X)
+    _, vectores = np.linalg.eig(cov)
+    CP1 = X.dot(vectores[:, 0])
+    CP2 = X.dot(vectores[:, 1])
+    return CP1, CP2
+
+
+# ============================================================
+# 8. DISTANCIA EUCLIDIANA Y K-MEDIAS
+# ============================================================
+def etiquetar_grupos_por_estres(grupos, centroides):
+    # Usamos CP1 como indicador de estrés
+    valores_estres = [centroide[0] for centroide in centroides]
+
+    orden = np.argsort(valores_estres)  # menor a mayor
+    etiquetas = {}
+
+    if len(centroides) == 2:
+        etiquetas[orden[0]] = "Menor nivel de estrés"
+        etiquetas[orden[1]] = "Mayor nivel de estrés"
+    else:
+        etiquetas[orden[0]] = "Bajo estrés"
+        etiquetas[orden[-1]] = "Alto estrés"
+        for i in orden[1:-1]:
+            etiquetas[i] = "Estrés moderado"
+
+    return etiquetas
+
+
+def distancia(p1, p2):
+    return np.sqrt(sum((p1[i] - p2[i]) ** 2 for i in range(len(p1))))
+
+
+def k_medias(datos, K, it=100):
+    centroides = datos[np.random.choice(len(datos), K, replace=False)]
+
+    for _ in range(it):
+        grupos = [[] for _ in range(K)]
+        for p in datos:
+            idx = np.argmin([distancia(p, c) for c in centroides])
+            grupos[idx].append(p)
+
+        nuevos = []
+        for g in grupos:
+            nuevos.append(np.mean(g, axis=0) if len(g) > 0 else np.random.rand(2))
+        nuevos = np.array(nuevos)
+
+        if np.allclose(centroides, nuevos):
+            break
+        centroides = nuevos
+
+    return grupos, centroides
+
+
+def graficar_kmedias(grupos, centroides, K):
+    colores = ['green', 'orange', 'red', 'purple']
+    etiquetas = etiquetar_grupos_por_estres(grupos, centroides)
+
+    plt.figure()
+
+    for i, g in enumerate(grupos):
+        g = np.array(g)
+        plt.scatter(
+            g[:, 0], g[:, 1],
+            color=colores[i],
+            label=etiquetas[i]
+        )
+
+    plt.scatter(
+        centroides[:, 0], centroides[:, 1],
+        marker='X', color='black', s=150,
+        label='Centroides'
+    )
+
+    plt.xlabel("CP1")
+    plt.ylabel("CP2")
+    plt.title(f"K-medias (K = {K}) – Clasificación por nivel de estrés")
+    plt.legend()
+    plt.grid(alpha=0.4, linestyle='--')
+    plt.show()
+
+def punto_mas_cercano(grupo, centroide):
+    menor_distancia = float('inf')
+    punto_cercano = None
+
+    for p in grupo:
+        d = distancia(p, centroide)
+        if d < menor_distancia:
+            menor_distancia = d
+            punto_cercano = p
+
+    return punto_cercano
+
+
+def graficar_punto_representativo(grupos, centroides, K):
+    colores = ['green', 'orange', 'red', 'purple']
+    etiquetas = etiquetar_grupos_por_estres(grupos, centroides)
+
+    plt.figure(figsize=(6, 6))
+
+    for i, grupo in enumerate(grupos):
+        punto = punto_mas_cercano(grupo, centroides[i])
+
+        if punto is not None:
+            d = distancia(punto, centroides[i])
+
+            plt.scatter(
+                punto[0], punto[1],
+                color=colores[i],
+                s=90,
+                label=etiquetas[i]
+            )
+
+            # Texto con coordenadas y distancia
+            plt.text(
+                punto[0], punto[1],
+                f"({punto[0]:.2f}, {punto[1]:.2f})\n"
+                f"d = {d:.3f}",
+                fontsize=9,
+                verticalalignment='bottom'
+            )
+
+            # Línea del punto al centroide
+            plt.plot(
+                [punto[0], centroides[i][0]],
+                [punto[1], centroides[i][1]],
+                linestyle='--',
+                alpha=0.6
+            )
+
+    # Centroides
+    plt.scatter(
+        centroides[:, 0], centroides[:, 1],
+        marker='X',
+        color='black',
+        s=150,
+        label='Centroides'
+    )
+
+    plt.xlabel("CP1")
+    plt.ylabel("CP2")
+    plt.title(f"K-medias (K = {K}) – Punto más cercano y distancia al centroide")
+    plt.legend()
+    plt.grid(alpha=0.4, linestyle='--')
+    plt.show()
+
+
+
+
+
+# ============================================================
+# 9. FUNCIÓN PRINCIPAL
+# ============================================================
+def analizar_estres_estudiantes(ruta_csv):
+    df = cargar_y_renombrar_dataset(ruta_csv)
+    df, columnas = preparar_datos(df)
+
+    print("Registros:", len(df))
+    prueba_shapiro(df, columnas)
+
+    X = normalizar(df.to_numpy())
+
+    autovalores, varianza, var_acum = analizar_valores_propios(X)
+    graficar_scree(autovalores)
+    graficar_varianza_acumulada(var_acum)
+
+    CP1, CP2 = pca(X)
+    datos = np.column_stack((CP1, CP2))
+
+    for K in [2, 3, 4]:
+        grupos, centroides = k_medias(datos, K)
+        graficar_kmedias(grupos, centroides, K)
+        graficar_punto_representativo(grupos, centroides, K)
+
+
+
+# ============================================================
+# 10. EJECUCIÓN
+# ============================================================
+ruta = "/content/drive/MyDrive/Programación para ciencia de datos/Student Stress Factors (2).csv"
+analizar_estres_estudiantes(ruta)
